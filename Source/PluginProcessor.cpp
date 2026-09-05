@@ -153,17 +153,52 @@ void PhysicalDrumEngineAudioProcessor::processBlock(juce::AudioBuffer<float>& bu
 bool PhysicalDrumEngineAudioProcessor::loadSampleForPad(int padIndex, const juce::File& file)
 {
     if (padIndex < 0 || padIndex >= numPads || !file.existsAsFile()) return false;
-    std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(file));
+
+    std::unique_ptr<juce::AudioFormatReader> reader(
+        formatManager.createReaderFor(file));
+
     if (!reader) return false;
-    auto audio = std::make_unique<juce::AudioBuffer<float>>((int)reader->numChannels, (int)reader->lengthInSamples);
-    reader->read(audio.get(), 0, (int)reader->lengthInSamples, 0, true, true);
+
+    auto audio = std::make_unique<juce::AudioBuffer<float>>(
+        (int) reader->numChannels,
+        (int) reader->lengthInSamples);
+
+    reader->read(
+        audio.get(),
+        0,
+        (int) reader->lengthInSamples,
+        0,
+        true,
+        true);
+
     pads[padIndex].sample = std::move(audio);
     pads[padIndex].sampleRate = reader->sampleRate;
     pads[padIndex].sampleFile = file;
+
     return true;
 }
 
 void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
+{
+    if (padIndex < 0 || padIndex >= numPads)
+        return;
+
+    sampleChooser = std::make_unique<juce::FileChooser>(
+        "Choose a WAV sample",
+        juce::File{},
+        "*.wav");
+
+    sampleChooser->launchAsync(
+        juce::FileBrowserComponent::openMode |
+        juce::FileBrowserComponent::canSelectFiles,
+        [this, padIndex](const juce::FileChooser& chooser)
+        {
+            if (chooser.getURLResult().isLocalFile())
+                loadSampleForPad(padIndex, chooser.getResult());
+
+            sampleChooser.reset();
+        });
+}
 {
     juce::FileChooser chooser("Choose a WAV sample", {}, "*.wav");
     void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
