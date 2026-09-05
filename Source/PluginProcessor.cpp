@@ -166,7 +166,24 @@ bool PhysicalDrumEngineAudioProcessor::loadSampleForPad(int padIndex, const juce
 void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
 {
     juce::FileChooser chooser("Choose a WAV sample", {}, "*.wav");
-    if (chooser.browseForFileToOpen()) loadSampleForPad(padIndex, chooser.getResult());
+    void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
+{
+    if (padIndex < 0 || padIndex >= numPads) return;
+
+    sampleChooser = std::make_unique<juce::FileChooser>(
+        "Choose a WAV sample", juce::File{}, "*.wav");
+
+    sampleChooser->launchAsync(
+        juce::FileBrowserComponent::openMode |
+        juce::FileBrowserComponent::canSelectFiles,
+        [this, padIndex](const juce::FileChooser& chooser)
+        {
+            if (chooser.getURLResult().isLocalFile())
+                loadSampleForPad(padIndex, chooser.getResult());
+
+            sampleChooser.reset();
+        });
+}
 }
 
 void PhysicalDrumEngineAudioProcessor::loadFactorySnare()
