@@ -65,6 +65,7 @@ private:
     static constexpr int maxVoices = 64;
     std::array<Voice, maxVoices> voices;
     double currentSampleRate = 44100.0;
+    std::unique_ptr<juce::FileChooser> sampleChooser;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
     void triggerPad(int padIndex, float velocity);
