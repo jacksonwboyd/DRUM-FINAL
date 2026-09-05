@@ -24,7 +24,7 @@ juce_add_binary_data(FactoryAssets SOURCES
 
 juce_add_plugin(PhysicalDrumEngine
     COMPANY_NAME "Independent"
-    PRODUCT_NAME "COCK DRUM"
+    PRODUCT_NAME "Physical Drum Engine"
     BUNDLE_ID "com.independent.physicaldrumengine"
     PLUGIN_MANUFACTURER_CODE PDEM
     PLUGIN_CODE PDEM
