@@ -66,6 +66,7 @@ private:
         float brightnessAmount = 1.0f;
         float lowpassState = 0.0f;
         float lowpassCoeff = 1.0f;
+        float maxProgress = 1.0f;
         juce::Random rng;
     };
 
