@@ -3,8 +3,6 @@
 PhysicalDrumEngineAudioProcessorEditor::PhysicalDrumEngineAudioProcessorEditor(PhysicalDrumEngineAudioProcessor& p)
     : AudioProcessorEditor(&p), processor(p)
 {
-    // V1.2 deliberately keeps editor construction simple and host-safe.
-    // No file I/O, timers, or parameter attachments are created here.
     setSize(960, 620);
     setResizable(false, false);
 
@@ -13,7 +11,7 @@ PhysicalDrumEngineAudioProcessorEditor::PhysicalDrumEngineAudioProcessorEditor(P
     title.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(title);
 
-    subtitle.setText("V1.4  •  VELOCITY ENGINE", juce::dontSendNotification);
+    subtitle.setText("V1.5  •  VELOCITY ENGINE  •  DRAG & DROP SAMPLES", juce::dontSendNotification);
     subtitle.setFont(juce::Font(juce::FontOptions{}.withHeight(12.0f)));
     subtitle.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(subtitle);
@@ -26,7 +24,7 @@ PhysicalDrumEngineAudioProcessorEditor::PhysicalDrumEngineAudioProcessorEditor(P
         padLabels[(size_t) i].setJustificationType(juce::Justification::centred);
         addAndMakeVisible(padLabels[(size_t) i]);
 
-        padButtons[(size_t) i].setButtonText("LOAD WAV");
+        padButtons[(size_t) i].setButtonText("DROP / LOAD WAV");
         padButtons[(size_t) i].onClick = [this, i]
         {
             processor.loadSampleForPadFromChooser(i);
@@ -61,6 +59,82 @@ PhysicalDrumEngineAudioProcessorEditor::PhysicalDrumEngineAudioProcessorEditor(P
         addAndMakeVisible(knobLabels[(size_t) i]);
         addAndMakeVisible(slider);
     }
+
+    setWantsKeyboardFocus(false);
+}
+
+bool PhysicalDrumEngineAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    for (const auto& path : files)
+    {
+        juce::File f(path);
+        if (f.existsAsFile() && (f.hasFileExtension("wav;aif;aiff;flac;ogg")))
+            return true;
+    }
+    return false;
+}
+
+void PhysicalDrumEngineAudioProcessorEditor::itemDragEnter(const juce::DragAndDropTarget::SourceDetails& details)
+{
+    setDragPad(padAtPoint(details.localPosition.roundToInt()));
+    repaint();
+}
+
+void PhysicalDrumEngineAudioProcessorEditor::itemDragMove(const juce::DragAndDropTarget::SourceDetails& details)
+{
+    setDragPad(padAtPoint(details.localPosition.roundToInt()));
+    repaint();
+}
+
+void PhysicalDrumEngineAudioProcessorEditor::itemDragExit(const juce::DragAndDropTarget::SourceDetails&)
+{
+    setDragPad(-1);
+    repaint();
+}
+
+void PhysicalDrumEngineAudioProcessorEditor::filesDropped(const juce::StringArray& files, int x, int y)
+{
+    const int targetPad = padAtPoint({ x, y });
+    setDragPad(-1);
+
+    if (targetPad < 0 || files.isEmpty())
+    {
+        repaint();
+        return;
+    }
+
+    juce::File file(files[0]);
+    if (!file.existsAsFile() || !file.hasFileExtension("wav;aif;aiff;flac;ogg"))
+    {
+        repaint();
+        return;
+    }
+
+    if (processor.loadSampleForPad(targetPad, file))
+    {
+        padLabels[(size_t) targetPad].setText(
+            processor.pads[(size_t) targetPad].name + "  •  " + file.getFileNameWithoutExtension(),
+            juce::dontSendNotification);
+        padButtons[(size_t) targetPad].setButtonText("LOADED  •  DROP TO REPLACE");
+    }
+
+    repaint();
+}
+
+int PhysicalDrumEngineAudioProcessorEditor::padAtPoint(juce::Point<int> point) const
+{
+    for (int i = 0; i < PhysicalDrumEngineAudioProcessor::numPads; ++i)
+        if (padDropBounds[(size_t) i].contains(point))
+            return i;
+    return -1;
+}
+
+void PhysicalDrumEngineAudioProcessorEditor::setDragPad(int newPad)
+{
+    if (dragPad == newPad) return;
+    dragPad = newPad;
+    for (int i = 0; i < PhysicalDrumEngineAudioProcessor::numPads; ++i)
+        padButtons[(size_t) i].setButtonText(i == dragPad ? "DROP SAMPLE HERE" : "DROP / LOAD WAV");
 }
 
 void PhysicalDrumEngineAudioProcessorEditor::paint(juce::Graphics& g)
@@ -72,6 +146,17 @@ void PhysicalDrumEngineAudioProcessorEditor::paint(juce::Graphics& g)
     g.fillRoundedRectangle(panel, 12.0f);
     g.setColour(juce::Colour(0xff3a3d42));
     g.drawRoundedRectangle(panel, 12.0f, 1.0f);
+
+    for (int i = 0; i < PhysicalDrumEngineAudioProcessor::numPads; ++i)
+    {
+        auto r = padDropBounds[(size_t) i].toFloat().reduced(1.0f);
+        g.setColour(i == dragPad ? juce::Colour(0xffd8d8d3) : juce::Colour(0xff3a3d42));
+        g.drawRoundedRectangle(r, 8.0f, i == dragPad ? 2.0f : 1.0f);
+    }
+
+    g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0f)));
+    g.setColour(juce::Colour(0xff777b80));
+    g.drawText("DRAG WAV / AIFF / FLAC / OGG ONTO ANY PAD", 28, 584, 904, 18, juce::Justification::centred);
 }
 
 void PhysicalDrumEngineAudioProcessorEditor::resized()
@@ -96,8 +181,10 @@ void PhysicalDrumEngineAudioProcessorEditor::resized()
             cellW - 8,
             cellH - 8).reduced(4);
 
-        padLabels[(size_t) i].setBounds(cell.removeFromTop(26));
-        padButtons[(size_t) i].setBounds(cell.reduced(18, 10));
+        padDropBounds[(size_t) i] = cell;
+        auto labelArea = cell;
+        padLabels[(size_t) i].setBounds(labelArea.removeFromTop(26));
+        padButtons[(size_t) i].setBounds(labelArea.reduced(18, 10));
     }
 
     area.removeFromTop(14);
