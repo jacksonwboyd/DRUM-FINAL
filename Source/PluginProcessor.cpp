@@ -66,8 +66,10 @@ int PhysicalDrumEngineAudioProcessor::noteToPad(int note) const
 void PhysicalDrumEngineAudioProcessor::triggerPad(int padIndex, float velocity)
 {
     if (padIndex < 0 || padIndex >= numPads || !pads[padIndex].sample) return;
+
     Voice* voice = nullptr;
-    for (auto& candidate : voices) if (!candidate.active) { voice = &candidate; break; }
+    for (auto& candidate : voices)
+        if (!candidate.active) { voice = &candidate; break; }
     if (!voice) voice = &voices[0];
 
     const float phy = clamp01(param(apvts, "physicality"));
@@ -75,61 +77,121 @@ void PhysicalDrumEngineAudioProcessor::triggerPad(int padIndex, float velocity)
     const float pitch = clamp01(param(apvts, "pitch"));
     const float variation = clamp01(param(apvts, "variation"));
     const float timing = clamp01(param(apvts, "timing"));
+    const float brightness = clamp01(param(apvts, "brightness"));
+    const float attack = clamp01(param(apvts, "attack"));
 
-    const float r = voice->rng.nextFloat() - 0.5f;
-    const float velocityPitch = (velocity - 0.5f) * 30.0f * pitch * phy;
-    const float randomPitch = r * 7.0f * variation * phy;
-    const double rate = std::pow(2.0, (velocityPitch + randomPitch) / 1200.0);
+    // Deliberately exaggerated per-hit physical variation.
+    // Each hit gets its own gain, pitch, decay, transient and brightness identity.
+    auto signedRandom = [&]() { return voice->rng.nextFloat() * 2.0f - 1.0f; };
+    const float intensity = juce::jlimit(0.0f, 1.0f, 0.15f + 0.85f * phy);
+    const float variationAmount = juce::jlimit(0.0f, 1.0f, 0.10f + 0.90f * variation);
+
+    const float velocityPitch = (velocity - 0.5f) * 70.0f * pitch * phy;
+    const float randomPitch = signedRandom() * (55.0f * intensity * variationAmount);
+    const float cents = velocityPitch + randomPitch;
+    const double rate = std::pow(2.0, cents / 1200.0);
+
+    const float gainJitterDb = signedRandom() * (5.0f * intensity * variationAmount);
+    const float randomGain = dbToGain(gainJitterDb);
+    const float transientJitter = 1.0f + signedRandom() * (0.75f * intensity * variationAmount);
+    const float decayJitter = 1.0f + signedRandom() * (0.45f * intensity * variationAmount);
+    const float brightnessJitter = signedRandom() * (0.35f * intensity * variationAmount);
 
     voice->active = true;
     voice->pad = padIndex;
     voice->pos = 0.0;
     voice->rate = rate * (pads[padIndex].sampleRate / currentSampleRate);
     voice->velocity = velocity;
-    voice->gain = std::pow(std::max(0.001f, velocity), 0.62f) * (0.80f + 0.20f * trans * phy) * pads[padIndex].trim;
-    voice->attack = (0.00025f + (1.0f - velocity) * 0.012f * clamp01(param(apvts, "attack")) * phy) * (float)currentSampleRate;
+    voice->gainJitter = randomGain;
+    voice->pitchCents = cents;
+    voice->decayScale = juce::jlimit(0.45f, 1.55f, decayJitter);
+    voice->transientBoost = juce::jlimit(0.25f, 1.90f, transientJitter);
+    voice->brightnessAmount = juce::jlimit(0.05f, 1.0f, brightness + brightnessJitter);
+    voice->lowpassState = 0.0f;
+
+    // Brightness becomes a real spectral change: lower values strongly soften the hit.
+    const float cutoff = juce::jlimit(1800.0f, 19000.0f,
+        1800.0f + voice->brightnessAmount * 17200.0f);
+    voice->lowpassCoeff = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * cutoff / (float)currentSampleRate);
+
+    voice->gain = std::pow(std::max(0.001f, velocity), 0.62f)
+        * (0.70f + 0.60f * trans * phy)
+        * randomGain
+        * pads[padIndex].trim;
+
+    voice->attack = (0.00015f
+        + (1.0f - velocity) * 0.018f * attack * (0.5f + phy * 1.5f))
+        * (float)currentSampleRate;
+
     voice->age = 0;
 
-    // Timing is represented as a tiny pre-roll delay by starting the voice slightly late.
+    // Physical timing variation: up to 8 ms at maximum, plus a random per-hit offset.
     if (timing > 0.0f)
-        voice->pos = -voice->rng.nextFloat() * timing * phy * 0.0025 * currentSampleRate;
+        voice->pos = -voice->rng.nextFloat() * timing * phy * 0.008 * currentSampleRate;
 }
 
 void PhysicalDrumEngineAudioProcessor::renderVoice(Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
     if (!v.active || v.pad < 0 || !pads[v.pad].sample) return;
+
     auto& pad = pads[v.pad];
     const auto* data = pad.sample->getReadPointer(0);
     const int total = pad.sample->getNumSamples();
+
     const float phy = clamp01(param(apvts, "physicality"));
     const float transient = clamp01(param(apvts, "transient"));
-    const float brightness = clamp01(param(apvts, "brightness"));
     const float body = juce::jlimit(0.0f, 1.5f, param(apvts, "body"));
     const float decay = clamp01(param(apvts, "decay"));
     const float mix = clamp01(param(apvts, "mix"));
 
     for (int i = 0; i < numSamples; ++i)
     {
-        if (v.pos < 0.0) { v.pos += 1.0; ++v.age; continue; }
+        if (v.pos < 0.0)
+        {
+            v.pos += 1.0;
+            ++v.age;
+            continue;
+        }
+
         const int idx = (int)v.pos;
         if (idx >= total) { v.active = false; break; }
+
         const int next = std::min(idx + 1, total - 1);
         const float frac = (float)(v.pos - idx);
-        float s = data[idx] + (data[next] - data[idx]) * frac;
-
+        const float raw = data[idx] + (data[next] - data[idx]) * frac;
         const float progress = (float)idx / (float)std::max(1, total);
-        const float transientShape = std::exp(-progress * 90.0f);
-        const float bodyShape = 0.55f + 0.45f * std::exp(-progress * 7.0f);
-        const float attackEnv = v.age < v.attack ? (float)v.age / std::max(1.0f, v.attack) : 1.0f;
-        const float tailShape = std::pow(1.0f - progress, 0.5f + (1.0f - decay) * 2.5f);
-        const float velocityTransient = 1.0f + phy * transient * transientShape * ((v.velocity - 0.5f) * 1.9f);
-        const float velocityBody = body * (0.75f + 0.5f * v.velocity) * (1.0f + phy * 0.18f * bodyShape);
-        const float brightnessShape = 1.0f + (brightness - 0.5f) * phy * transientShape * 1.5f;
-        const float env = attackEnv * tailShape;
 
-        float out = s * v.gain * velocityTransient * velocityBody * brightnessShape * env * mix;
+        const float transientShape = std::exp(-progress * 105.0f);
+        const float bodyShape = 0.55f + 0.45f * std::exp(-progress * 6.0f);
+        const float attackEnv = v.age < v.attack
+            ? (float)v.age / std::max(1.0f, v.attack)
+            : 1.0f;
+
+        // Decay now has a much more audible effect because it controls a per-hit envelope.
+        const float decayExponent = juce::jlimit(0.20f, 5.0f,
+            0.35f + (1.0f - decay) * 3.2f) / v.decayScale;
+        const float tailShape = std::pow(std::max(0.0f, 1.0f - progress), decayExponent);
+
+        // Velocity and physicality strongly reshape the transient/body relationship.
+        const float velocityTransient = 1.0f
+            + transient * transientShape * (0.65f + 1.75f * v.velocity)
+            * v.transientBoost * (0.55f + 0.90f * phy);
+
+        const float velocityBody = body
+            * (0.55f + 0.95f * v.velocity)
+            * (0.70f + 0.55f * phy * bodyShape);
+
+        // Real spectral movement instead of a volume-only "brightness" control.
+        v.lowpassState += v.lowpassCoeff * (raw - v.lowpassState);
+        const float spectral = v.lowpassState + v.brightnessAmount * (raw - v.lowpassState);
+
+        const float env = attackEnv * tailShape;
+        const float out = spectral * v.gain * velocityTransient * velocityBody * env * mix;
+
         buffer.addSample(0, startSample + i, out);
-        if (buffer.getNumChannels() > 1) buffer.addSample(1, startSample + i, out);
+        if (buffer.getNumChannels() > 1)
+            buffer.addSample(1, startSample + i, out);
+
         v.pos += v.rate;
         ++v.age;
     }
