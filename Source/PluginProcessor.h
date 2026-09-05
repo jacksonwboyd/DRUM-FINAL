@@ -59,6 +59,13 @@ private:
         float gain = 1.0f;
         float attack = 0.0f;
         int age = 0;
+        float gainJitter = 1.0f;
+        float pitchCents = 0.0f;
+        float decayScale = 1.0f;
+        float transientBoost = 1.0f;
+        float brightnessAmount = 1.0f;
+        float lowpassState = 0.0f;
+        float lowpassCoeff = 1.0f;
         juce::Random rng;
     };
 
