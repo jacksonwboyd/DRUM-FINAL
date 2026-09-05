@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
-project(PhysicalDrumEngine VERSION 1.1.0)
+project(PhysicalDrumEngine VERSION 1.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Universal macOS binary")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -51,9 +56,3 @@ target_link_libraries(PhysicalDrumEngine PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp
 )
-
-if(APPLE)
-    set_target_properties(PhysicalDrumEngine PROPERTIES
-        XCODE_ATTRIBUTE_MACOSX_DEPLOYMENT_TARGET "11.0"
-    )
-endif()
