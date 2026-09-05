@@ -178,7 +178,7 @@ bool PhysicalDrumEngineAudioProcessor::loadSampleForPad(int padIndex, const juce
     return true;
 }
 
-void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
+]void PhysicalDrumEngineAudioProcessor::loadSampleForPadFromChooser(int padIndex)
 {
     if (padIndex < 0 || padIndex >= numPads)
         return;
