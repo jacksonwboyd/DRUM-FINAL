@@ -72,62 +72,98 @@ void PhysicalDrumEngineAudioProcessor::triggerPad(int padIndex, float velocity)
         if (!candidate.active) { voice = &candidate; break; }
     if (!voice) voice = &voices[0];
 
-    const float phy = clamp01(param(apvts, "physicality"));
-    const float trans = clamp01(param(apvts, "transient"));
-    const float pitch = clamp01(param(apvts, "pitch"));
-    const float variation = clamp01(param(apvts, "variation"));
-    const float timing = clamp01(param(apvts, "timing"));
+    // Velocity is the primary physical input.  The knobs scale how strongly
+    // velocity changes the sound across the entire kit.
+    const float phy        = clamp01(param(apvts, "physicality"));
+    const float trans      = clamp01(param(apvts, "transient"));
+    const float pitch      = clamp01(param(apvts, "pitch"));
+    const float variation  = clamp01(param(apvts, "variation"));
+    const float timing     = clamp01(param(apvts, "timing"));
     const float brightness = clamp01(param(apvts, "brightness"));
-    const float attack = clamp01(param(apvts, "attack"));
+    const float attack     = clamp01(param(apvts, "attack"));
+    const float decay      = clamp01(param(apvts, "decay"));
+    const float body       = juce::jlimit(0.0f, 1.5f, param(apvts, "body"));
 
-    // Deliberately exaggerated per-hit physical variation.
-    // Each hit gets its own gain, pitch, decay, transient and brightness identity.
+    const float vel = clamp01(velocity);
+    const float velCurve = std::pow(vel, 0.82f);
+    const float physicalAmount = juce::jlimit(0.0f, 1.0f, 0.20f + 0.80f * phy);
+    const float variationAmount = 0.15f + 0.85f * variation;
+
     auto signedRandom = [&]() { return voice->rng.nextFloat() * 2.0f - 1.0f; };
-    const float intensity = juce::jlimit(0.0f, 1.0f, 0.15f + 0.85f * phy);
-    const float variationAmount = juce::jlimit(0.0f, 1.0f, 0.10f + 0.90f * variation);
 
-    const float velocityPitch = (velocity - 0.5f) * 70.0f * pitch * phy;
-    const float randomPitch = signedRandom() * (55.0f * intensity * variationAmount);
-    const float cents = velocityPitch + randomPitch;
-    const double rate = std::pow(2.0, cents / 1200.0);
+    // Small stochastic identity remains, but it is deliberately subordinate
+    // to velocity.  The same velocity therefore produces the same overall
+    // physical direction while individual hits still have fingerprints.
+    const float randomIdentity = signedRandom() * variationAmount * physicalAmount;
 
-    const float gainJitterDb = signedRandom() * (5.0f * intensity * variationAmount);
-    const float randomGain = dbToGain(gainJitterDb);
-    const float transientJitter = 1.0f + signedRandom() * (0.75f * intensity * variationAmount);
-    const float decayJitter = 1.0f + signedRandom() * (0.45f * intensity * variationAmount);
-    const float brightnessJitter = signedRandom() * (0.35f * intensity * variationAmount);
+    // HIGH velocity = longer, fuller, more sustained hit.
+    // LOW velocity = shorter, softer, less sustained hit.
+    // maxProgress gates the sample, while rate stretches/compresses it.
+    const float sustainFromVelocity = 0.34f + 0.66f * std::pow(vel, 0.72f);
+    const float sustainFromDecay = 0.55f + 0.55f * decay;
+    const float sustainVariation = 1.0f + randomIdentity * 0.10f;
+    voice->maxProgress = juce::jlimit(0.22f, 1.0f,
+        sustainFromVelocity * sustainFromDecay * sustainVariation);
+
+    // Higher velocities travel through more of the sample more slowly.
+    // This is the main audible velocity -> duration relationship.
+    const float velocityDurationRate = 1.18f - 0.46f * vel;
+    const float pitchFromVelocity = (vel - 0.5f) * 110.0f * pitch * (0.45f + 0.90f * phy);
+    const float randomPitch = signedRandom() * (18.0f + 42.0f * variation) * physicalAmount;
+    const float cents = pitchFromVelocity + randomPitch;
+    const double pitchRate = std::pow(2.0, cents / 1200.0);
 
     voice->active = true;
     voice->pad = padIndex;
     voice->pos = 0.0;
-    voice->rate = rate * (pads[padIndex].sampleRate / currentSampleRate);
-    voice->velocity = velocity;
-    voice->gainJitter = randomGain;
+    voice->rate = velocityDurationRate * pitchRate * (pads[padIndex].sampleRate / currentSampleRate);
+    voice->velocity = vel;
     voice->pitchCents = cents;
-    voice->decayScale = juce::jlimit(0.45f, 1.55f, decayJitter);
-    voice->transientBoost = juce::jlimit(0.25f, 1.90f, transientJitter);
-    voice->brightnessAmount = juce::jlimit(0.05f, 1.0f, brightness + brightnessJitter);
-    voice->lowpassState = 0.0f;
 
-    // Brightness becomes a real spectral change: lower values strongly soften the hit.
-    const float cutoff = juce::jlimit(1800.0f, 19000.0f,
-        1800.0f + voice->brightnessAmount * 17200.0f);
-    voice->lowpassCoeff = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * cutoff / (float)currentSampleRate);
-
-    voice->gain = std::pow(std::max(0.001f, velocity), 0.62f)
-        * (0.70f + 0.60f * trans * phy)
-        * randomGain
+    // Velocity-driven accent: soft hits are genuinely quieter; hard hits hit
+    // the transient/body much harder. Random gain is only a small identity layer.
+    const float gainIdentityDb = randomIdentity * 2.8f;
+    voice->gainJitter = dbToGain(gainIdentityDb);
+    voice->gain = std::pow(std::max(0.001f, vel), 1.20f)
+        * (0.45f + 1.15f * trans * (0.35f + 0.65f * phy))
+        * voice->gainJitter
         * pads[padIndex].trim;
 
-    voice->attack = (0.00015f
-        + (1.0f - velocity) * 0.018f * attack * (0.5f + phy * 1.5f))
-        * (float)currentSampleRate;
+    // Velocity now controls the attack shape: hard hits arrive almost
+    // immediately; soft hits have a softer/longer onset.
+    const float attackSeconds = 0.00015f
+        + (1.0f - vel) * (0.002f + 0.022f * attack * (0.45f + 0.85f * phy));
+    voice->attack = attackSeconds * (float) currentSampleRate;
+
+    // Velocity drives transient intensity directly.
+    const float velocityTransient = 0.35f + 2.10f * std::pow(vel, 0.78f);
+    const float transientIdentity = 1.0f + randomIdentity * 0.32f;
+    voice->transientBoost = juce::jlimit(0.25f, 2.60f,
+        velocityTransient * transientIdentity);
+
+    // Velocity drives brightness.  Harder hits open the top end substantially.
+    const float velocityBrightness = brightness * (0.16f + 0.84f * std::pow(vel, 0.70f));
+    const float brightnessIdentity = randomIdentity * 0.10f;
+    voice->brightnessAmount = juce::jlimit(0.02f, 1.0f,
+        velocityBrightness + brightnessIdentity);
+
+    const float cutoff = juce::jlimit(900.0f, 19500.0f,
+        900.0f + voice->brightnessAmount * 18600.0f);
+    voice->lowpassCoeff = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi
+        * cutoff / (float) currentSampleRate);
+    voice->lowpassState = 0.0f;
+
+    // Body is global: it affects every pad the same way, while velocity decides
+    // how much body is actually exposed on each hit.
+    voice->decayScale = juce::jlimit(0.30f, 1.70f,
+        0.55f + 0.95f * vel + 0.28f * decay + randomIdentity * 0.10f);
 
     voice->age = 0;
 
-    // Physical timing variation: up to 8 ms at maximum, plus a random per-hit offset.
+    // Timing remains a global amount. The random offset is intentionally tiny
+    // compared with the velocity-driven dynamics so timing never dominates.
     if (timing > 0.0f)
-        voice->pos = -voice->rng.nextFloat() * timing * phy * 0.008 * currentSampleRate;
+        voice->pos = -voice->rng.nextFloat() * timing * physicalAmount * 0.006 * currentSampleRate;
 }
 
 void PhysicalDrumEngineAudioProcessor::renderVoice(Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
@@ -153,40 +189,56 @@ void PhysicalDrumEngineAudioProcessor::renderVoice(Voice& v, juce::AudioBuffer<f
             continue;
         }
 
-        const int idx = (int)v.pos;
+        const int idx = (int) v.pos;
         if (idx >= total) { v.active = false; break; }
 
         const int next = std::min(idx + 1, total - 1);
-        const float frac = (float)(v.pos - idx);
+        const float frac = (float) (v.pos - idx);
         const float raw = data[idx] + (data[next] - data[idx]) * frac;
-        const float progress = (float)idx / (float)std::max(1, total);
+        const float progress = (float) idx / (float) std::max(1, total);
 
-        const float transientShape = std::exp(-progress * 105.0f);
-        const float bodyShape = 0.55f + 0.45f * std::exp(-progress * 6.0f);
+        // Low velocity can end the hit early; high velocity is allowed to use
+        // essentially the whole sample. This is a true duration change rather
+        // than a random volume change.
+        if (progress >= v.maxProgress)
+        {
+            v.active = false;
+            break;
+        }
+
+        const float normalizedLife = progress / std::max(0.001f, v.maxProgress);
+        const float transientShape = std::exp(-normalizedLife * 105.0f);
+        const float bodyShape = 0.50f + 0.50f * std::exp(-normalizedLife * 5.0f);
+
         const float attackEnv = v.age < v.attack
-            ? (float)v.age / std::max(1.0f, v.attack)
+            ? (float) v.age / std::max(1.0f, v.attack)
             : 1.0f;
 
-        // Decay now has a much more audible effect because it controls a per-hit envelope.
-        const float decayExponent = juce::jlimit(0.20f, 5.0f,
-            0.35f + (1.0f - decay) * 3.2f) / v.decayScale;
-        const float tailShape = std::pow(std::max(0.0f, 1.0f - progress), decayExponent);
+        // Decay knob is global; velocity chooses how much of that decay is
+        // exposed. Hard hits stay alive longer and retain more body.
+        const float decayExponent = juce::jlimit(0.18f, 5.5f,
+            0.22f + (1.0f - decay) * 3.8f) / v.decayScale;
+        const float tailShape = std::pow(
+            std::max(0.0f, 1.0f - normalizedLife), decayExponent);
 
-        // Velocity and physicality strongly reshape the transient/body relationship.
-        const float velocityTransient = 1.0f
-            + transient * transientShape * (0.65f + 1.75f * v.velocity)
-            * v.transientBoost * (0.55f + 0.90f * phy);
+        // Harder hits produce a much larger transient and body contribution.
+        const float velocityTransient = 0.45f
+            + transient * v.transientBoost * transientShape
+            * (0.35f + 1.75f * v.velocity)
+            * (0.45f + 0.95f * phy);
 
-        const float velocityBody = body
-            * (0.55f + 0.95f * v.velocity)
-            * (0.70f + 0.55f * phy * bodyShape);
+        const float velocityBody = 0.35f
+            + body * (0.25f + 1.35f * v.velocity)
+            * (0.55f + 0.85f * phy * bodyShape);
 
-        // Real spectral movement instead of a volume-only "brightness" control.
+        // Global brightness control + velocity-driven spectral opening.
         v.lowpassState += v.lowpassCoeff * (raw - v.lowpassState);
-        const float spectral = v.lowpassState + v.brightnessAmount * (raw - v.lowpassState);
+        const float spectral = v.lowpassState
+            + v.brightnessAmount * (raw - v.lowpassState);
 
         const float env = attackEnv * tailShape;
-        const float out = spectral * v.gain * velocityTransient * velocityBody * env * mix;
+        const float out = spectral * v.gain
+            * velocityTransient * velocityBody * env * mix;
 
         buffer.addSample(0, startSample + i, out);
         if (buffer.getNumChannels() > 1)
