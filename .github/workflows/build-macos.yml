@@ -1,0 +1,63 @@
+name: Build Physical Drum Engine
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install CMake
+        run: brew install cmake
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build AU, VST3 and Standalone
+        run: |
+          cmake --build build \
+            --config Release \
+            --parallel 3
+
+      - name: Collect plugins
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifact
+
+          echo "Searching for AU..."
+          find build -type d -name "*.component" -print
+
+          echo "Searching for VST3..."
+          find build -type d -name "*.vst3" -print
+
+          echo "Searching for Standalone..."
+          find build -type d -name "*.app" -print
+
+          find build -type d -name "*.component" -exec cp -R {} artifact/ \;
+          find build -type d -name "*.vst3" -exec cp -R {} artifact/ \;
+          find build -type d -name "*.app" -exec cp -R {} artifact/ \;
+
+          echo ""
+          echo "FINAL ARTIFACTS:"
+          find artifact -maxdepth 1 -print
+
+          test -n "$(find artifact -maxdepth 1 -type d \( -name '*.component' -o -name '*.vst3' -o -name '*.app' \) -print -quit)"
+
+      - name: Upload finished plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: Physical-Drum-Engine-macOS
+          path: artifact/
+          if-no-files-found: error
