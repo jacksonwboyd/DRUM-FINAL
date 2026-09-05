@@ -13,7 +13,7 @@ PhysicalDrumEngineAudioProcessorEditor::PhysicalDrumEngineAudioProcessorEditor(P
     title.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(title);
 
-    subtitle.setText("V1.2  •  SAFE EDITOR BUILD", juce::dontSendNotification);
+    subtitle.setText("V1.4  •  VELOCITY ENGINE", juce::dontSendNotification);
     subtitle.setFont(juce::Font(juce::FontOptions{}.withHeight(12.0f)));
     subtitle.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(subtitle);
